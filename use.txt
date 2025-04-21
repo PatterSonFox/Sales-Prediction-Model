@@ -1,0 +1,2 @@
+sales_prediction_env\Scripts\activate
+python prediction_model.py
