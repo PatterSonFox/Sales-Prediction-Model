@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
@@ -16,7 +15,7 @@ test_df = pd.read_csv('sales_test_dataset.csv')
 
 # --- Preprocessing ---
 def prepare_data(df):
-    df['Date'] = pd.to_datetime(df['Date'])
+    df['Date'] = pd.to_datetime(df['Date'], format='mixed', dayfirst=True, errors='coerce')
     return df[['Date', 'Sales', 'Price', 'Discount', 'Month']]
 
 train = prepare_data(train_df)
@@ -56,6 +55,7 @@ arima_train = train['Sales']
 arima_model = ARIMA(arima_train, order=(5, 1, 0))
 arima_result = arima_model.fit()
 
+# Forecast next values (length of test data)
 arima_preds = arima_result.forecast(steps=len(test))
 results['ARIMA'] = {
     'RMSE': np.sqrt(mean_squared_error(test['Sales'], arima_preds)),
@@ -65,22 +65,27 @@ results['ARIMA'] = {
 # ===========================
 # 🔁 LSTM
 # ===========================
+# Scale features (excluding Date)
 scaler = MinMaxScaler()
 scaled_train = scaler.fit_transform(train[['Sales', 'Price', 'Discount', 'Month']])
 scaled_test = scaler.transform(test[['Sales', 'Price', 'Discount', 'Month']])
 
+# Prepare LSTM input format (timesteps = 1)
 X_train = np.reshape(scaled_train[:, 1:], (scaled_train.shape[0], 1, 3))
 y_train = scaled_train[:, 0]
 X_test = np.reshape(scaled_test[:, 1:], (scaled_test.shape[0], 1, 3))
 y_test_actual = test['Sales'].values
 
+# Build LSTM model
 lstm = Sequential()
 lstm.add(LSTM(64, activation='relu', input_shape=(1, 3)))
 lstm.add(Dense(1))
 lstm.compile(optimizer='adam', loss='mse')
 lstm.fit(X_train, y_train, epochs=50, verbose=0)
 
+# Predict and inverse scale
 lstm_preds_scaled = lstm.predict(X_test)
+# Fill Sales column with LSTM preds, then inverse transform
 temp = np.hstack((lstm_preds_scaled, scaled_test[:, 1:]))
 lstm_preds = scaler.inverse_transform(temp)[:, 0]
 
@@ -88,8 +93,6 @@ results['LSTM'] = {
     'RMSE': np.sqrt(mean_squared_error(y_test_actual, lstm_preds)),
     'R2': r2_score(y_test_actual, lstm_preds)
 }
-
-# --- Prediction Function ---
 def predict_sales(price, discount, month, model_choice):
     input_data = pd.DataFrame([[price, discount, month]], columns=['Price', 'Discount', 'Month'])
 
@@ -104,55 +107,30 @@ def predict_sales(price, discount, month, model_choice):
         temp_input = np.hstack((lstm_scaled_pred, scaled_input))
         pred = scaler.inverse_transform(temp_input)[0][0]
     else:
-        st.error("Unsupported model. Choose 'linear', 'random', or 'lstm'.")
+        print("ARIMA or unsupported model. Use 'linear', 'random', or 'lstm'.")
         return None
+
     return pred
-
 # ===========================
-# STREAMLIT APP
+# 📊 Comparative Analysis (for Streamlit dashboard)
 # ===========================
+import io
 
-st.set_page_config(page_title="Sales Prediction App", layout="wide")
-st.title("🛒 Sales Forecasting Dashboard")
-st.markdown("This app compares **Linear Regression**, **Random Forest**, **ARIMA**, and **LSTM** models on sales data.")
+def get_results_dataframe():
+    """Return the comparative analysis results as a DataFrame."""
+    df_results = pd.DataFrame(results).T
+    return df_results
 
-# --- Comparative Analysis Table ---
-st.header("🔍 Model Performance Comparison")
-df_results = pd.DataFrame(results).T
-st.dataframe(df_results.style.highlight_max(axis=0, color='lightgreen'), use_container_width=True)
-
-# --- Prediction Form ---
-st.header("📈 Predict Sales")
-with st.form(key='prediction_form'):
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        price = st.number_input('Price', min_value=0.0, value=50.0)
-    with col2:
-        discount = st.number_input('Discount', min_value=0.0, max_value=100.0, value=10.0)
-    with col3:
-        month = st.selectbox('Month', list(range(1, 13)), index=0)
-    with col4:
-        model_choice = st.selectbox('Model', ['Linear', 'Random', 'LSTM'])
-
-    submit_button = st.form_submit_button(label='Predict')
-
-    if submit_button:
-        prediction = predict_sales(price, discount, month, model_choice)
-        if prediction is not None:
-            st.success(f"🎯 Predicted Sales using {model_choice} model: **{round(prediction, 2)}** units.")
-
-# --- Line Plot of Predictions ---
-st.header("📊 Model Predictions vs Actual Sales")
-
-fig, ax = plt.subplots(figsize=(14, 7))
-ax.plot(test['Date'], test['Sales'], label='Actual', color='black', linewidth=2)
-ax.plot(test['Date'], lr_preds, label='Linear Regression', linestyle='--')
-ax.plot(test['Date'], rf_preds, label='Random Forest', linestyle='-.')
-ax.plot(test['Date'], arima_preds, label='ARIMA', linestyle=':')
-ax.plot(test['Date'], lstm_preds, label='LSTM', linestyle='-')
-ax.legend()
-ax.set_title('Sales Predictions by Different Models', fontsize=18)
-ax.set_xlabel('Date')
-ax.set_ylabel('Sales')
-ax.grid(True)
-st.pyplot(fig)
+def get_comparison_plot():
+    """Return the model comparison plot as a Matplotlib figure."""
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(test['Date'], test['Sales'], label='Actual', color='black')
+    ax.plot(test['Date'], lr_preds, label='Linear Regression')
+    ax.plot(test['Date'], rf_preds, label='Random Forest')
+    ax.plot(test['Date'], arima_preds, label='ARIMA')
+    ax.plot(test['Date'], lstm_preds, label='LSTM')
+    ax.legend()
+    ax.set_title("Sales Prediction Comparison")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Sales")
+    return fig
